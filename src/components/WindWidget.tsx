@@ -9,6 +9,7 @@ import {
   NativeScrollEvent,
 } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
+import { useSettings } from '../context/SettingsContext';
 import {
   fetchAllSpotsWind,
   degreesToDirection,
@@ -194,6 +195,7 @@ function ForecastScroll(props: ForecastScrollProps) {
 
 export default function WindWidget() {
   const { colors: c } = useTheme();
+  const { selectedLocations, minKnots } = useSettings();
   const [spots, setSpots]             = useState<SpotWind[]>([]);
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
@@ -276,13 +278,19 @@ export default function WindWidget() {
     );
   }
 
-  const spot     = spots[activeSpot];
+  // Filter to only user-selected locations
+  const visibleSpots = spots.filter((_, i) => selectedLocations.includes(i));
+  const clampedActive = Math.min(activeSpot, Math.max(visibleSpots.length - 1, 0));
+  const spot     = visibleSpots[clampedActive] ?? spots[0];
+  if (!spot) return null;
+
   const quality  = windQuality(spot.currentSpeed);
   const dirLabel = degreesToDirection(spot.currentDirection);
   const arrowQ   = windQuality(arrowSpeed);
+  const belowMin = minKnots > 0 && spot.currentSpeed < minKnots;
 
   const selectedDayData = selectedDay !== null ? spot.daily[selectedDay] : null;
-  const dayHours: HourForecast[] = selectedDay !== null
+  const dayHours: HourForecast[] = selectedDay !== null && spot.daily[selectedDay]
     ? spot.hourly.filter(h => {
         const d = spot.daily[selectedDay].date;
         return h.time.getFullYear() === d.getFullYear()
@@ -298,21 +306,22 @@ export default function WindWidget() {
         Wind
       </Text>
 
-      {/* ── Spot selector ── */}
+      {/* ── Spot selector (filtered by settings) ── */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
         style={{ marginBottom: 14 }}
         contentContainerStyle={{ gap: 8 }}
       >
-        {spots.map((s, i) => {
+        {visibleSpots.map((s, vi) => {
           const q = windQuality(s.currentSpeed);
-          const isActive = i === activeSpot;
+          const isActive = vi === clampedActive;
+          const low = minKnots > 0 && s.currentSpeed < minKnots;
           return (
             <TouchableOpacity
               key={s.name}
               onPress={() => {
-                setActiveSpot(i);
+                setActiveSpot(vi);
                 setSelectedDay(null);
                 resetArrow(s, null);
               }}
@@ -321,14 +330,19 @@ export default function WindWidget() {
                 paddingHorizontal: 14, paddingVertical: 8,
                 borderRadius: 20, borderWidth: 1.5,
                 backgroundColor: isActive ? c.windLight : c.background,
-                borderColor: isActive ? c.wind : c.border,
+                borderColor: isActive ? c.wind : low ? c.danger + '88' : c.border,
                 flexDirection: 'row', alignItems: 'center', gap: 6,
               }}
             >
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: q.color }} />
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: low ? c.danger : q.color }} />
               <Text style={{ fontSize: 13, fontWeight: isActive ? '700' : '500', color: isActive ? c.wind : c.subtext }}>
                 {s.name}
               </Text>
+              {low && (
+                <View style={{ backgroundColor: c.danger, borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1 }}>
+                  <Text style={{ fontSize: 9, fontWeight: '700', color: '#fff' }}>↓{minKnots}</Text>
+                </View>
+              )}
             </TouchableOpacity>
           );
         })}
@@ -371,13 +385,15 @@ export default function WindWidget() {
       </View>
 
       {/* ── Current conditions (static, always "now") ── */}
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end', marginBottom: 4 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4, gap: 8 }}>
         <Text style={{ fontSize: 11, color: c.subtext, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 }}>
-          Now  ·
+          Now · {spot.currentSpeed} kts from {dirLabel}
         </Text>
-        <Text style={{ fontSize: 11, color: c.subtext, fontWeight: '600' }}>
-          {spot.currentSpeed} kts  from {dirLabel}
-        </Text>
+        {belowMin && (
+          <View style={{ backgroundColor: c.danger, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2 }}>
+            <Text style={{ fontSize: 10, fontWeight: '700', color: '#fff' }}>Below {minKnots} kts minimum</Text>
+          </View>
+        )}
       </View>
 
       {/* Divider */}
