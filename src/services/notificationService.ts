@@ -76,8 +76,8 @@ export async function scheduleWindNotifications(
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DAILY,
-        hour: 10,
-        minute: 15,
+        hour: 15,
+        minute: 55,
       },
     });
   }
