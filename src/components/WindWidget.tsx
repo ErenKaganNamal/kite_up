@@ -17,9 +17,9 @@ import {
   DayForecast,
   HourForecast,
 } from '../services/windService';
-import WindArrow from './WindArrow';
+import { scheduleWindNotifications } from '../services/notificationService';
 
-// ── Constants ────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const DAILY_CARD_W  = 70;
 const DAILY_GAP     = 8;
@@ -29,9 +29,7 @@ const HOURLY_CARD_W = 60;
 const HOURLY_GAP    = 8;
 const HOURLY_STRIDE = HOURLY_CARD_W + HOURLY_GAP;
 
-const ARROW_SIZE = 86;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function windQuality(speed: number): { label: string; color: string } {
   if (speed < 10) return { label: 'Too Light', color: '#FFA502' };
@@ -52,7 +50,6 @@ function fmtHour(date: Date): string {
 }
 
 // ── ForecastScroll ────────────────────────────────────────────────────────────
-// Pure scroll — no embedded arrow. Reports leftmost index via onActiveChange.
 
 interface DailyScrollProps {
   mode: 'daily';
@@ -60,7 +57,7 @@ interface DailyScrollProps {
   colors: any;
   activeIdx: number;
   onSelectDay: (idx: number) => void;
-  onActiveChange: (speed: number, direction: number) => void;
+  onActiveChange: (idx: number) => void;
 }
 
 interface HourlyScrollProps {
@@ -70,7 +67,7 @@ interface HourlyScrollProps {
   activeIdx: number;
   dayLabel: string;
   onBack: () => void;
-  onActiveChange: (speed: number, direction: number) => void;
+  onActiveChange: (idx: number) => void;
 }
 
 type ForecastScrollProps = DailyScrollProps | HourlyScrollProps;
@@ -85,17 +82,9 @@ function ForecastScroll(props: ForecastScrollProps) {
       ? props.days.length - 1
       : (props as HourlyScrollProps).hours.length - 1;
     const idx = Math.min(Math.max(Math.round(x / stride), 0), maxIdx);
-
-    if (props.mode === 'daily') {
-      const d = props.days[idx];
-      onActiveChange(d.maxSpeed, d.dominantDirection);
-    } else {
-      const h = (props as HourlyScrollProps).hours[idx];
-      onActiveChange(h.speed, h.direction);
-    }
+    onActiveChange(idx);
   };
 
-  // Header
   const header = props.mode === 'hourly' ? (
     <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
       <TouchableOpacity
@@ -195,7 +184,7 @@ function ForecastScroll(props: ForecastScrollProps) {
 
 export default function WindWidget() {
   const { colors: c } = useTheme();
-  const { selectedLocations, minKnots } = useSettings();
+  const { selectedLocations } = useSettings();
   const [spots, setSpots]             = useState<SpotWind[]>([]);
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
@@ -203,20 +192,14 @@ export default function WindWidget() {
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
   const [activeIdx, setActiveIdx]     = useState(0);
 
-  // Arrow reflects whatever is leftmost in the forecast scroll
-  const [arrowSpeed, setArrowSpeed]   = useState(0);
-  const [arrowDir, setArrowDir]       = useState(0);
-
+  // Fetch wind data once on mount
   useEffect(() => {
     fetchAllSpotsWind()
       .then(data => {
         setSpots(data);
         setLoading(false);
-        // Seed arrow with first daily card of first spot
-        if (data[0]?.daily[0]) {
-          setArrowSpeed(data[0].daily[0].maxSpeed);
-          setArrowDir(data[0].daily[0].dominantDirection);
-        }
+        // Schedule daily 10:15 AM notifications for selected locations
+        scheduleWindNotifications(selectedLocations, data).catch(console.error);
       })
       .catch(e => {
         console.error(e);
@@ -225,27 +208,12 @@ export default function WindWidget() {
       });
   }, []);
 
-  // When spot or view changes, reset arrow + idx to first card
-  const resetArrow = (spot: SpotWind, dayIdx: number | null) => {
-    setActiveIdx(0);
-    if (dayIdx === null) {
-      const d = spot.daily[0];
-      if (d) { setArrowSpeed(d.maxSpeed); setArrowDir(d.dominantDirection); }
-    } else {
-      const hours = spot.hourly.filter(h => {
-        const d = spot.daily[dayIdx].date;
-        return h.time.getFullYear() === d.getFullYear()
-          && h.time.getMonth() === d.getMonth()
-          && h.time.getDate() === d.getDate();
-      });
-      if (hours[0]) { setArrowSpeed(hours[0].speed); setArrowDir(hours[0].direction); }
+  // Re-schedule notifications whenever selected locations change
+  useEffect(() => {
+    if (spots.length > 0) {
+      scheduleWindNotifications(selectedLocations, spots).catch(console.error);
     }
-  };
-
-  const handleScrollChange = (speed: number, direction: number) => {
-    setArrowSpeed(speed);
-    setArrowDir(direction);
-  };
+  }, [selectedLocations]);
 
   const cardStyle = {
     backgroundColor: c.card,
@@ -278,24 +246,22 @@ export default function WindWidget() {
     );
   }
 
-  // Filter to only user-selected locations
+  // Filter to user-selected locations
   const visibleSpots = spots.filter((_, i) => selectedLocations.includes(i));
   const clampedActive = Math.min(activeSpot, Math.max(visibleSpots.length - 1, 0));
-  const spot     = visibleSpots[clampedActive] ?? spots[0];
+  const spot = visibleSpots[clampedActive] ?? spots[0];
   if (!spot) return null;
 
   const quality  = windQuality(spot.currentSpeed);
   const dirLabel = degreesToDirection(spot.currentDirection);
-  const arrowQ   = windQuality(arrowSpeed);
-  const belowMin = minKnots > 0 && spot.currentSpeed < minKnots;
 
   const selectedDayData = selectedDay !== null ? spot.daily[selectedDay] : null;
   const dayHours: HourForecast[] = selectedDay !== null && spot.daily[selectedDay]
     ? spot.hourly.filter(h => {
         const d = spot.daily[selectedDay].date;
         return h.time.getFullYear() === d.getFullYear()
-          && h.time.getMonth() === d.getMonth()
-          && h.time.getDate() === d.getDate();
+          && h.time.getMonth()    === d.getMonth()
+          && h.time.getDate()     === d.getDate();
       })
     : [];
 
@@ -306,114 +272,74 @@ export default function WindWidget() {
         Wind
       </Text>
 
-      {/* ── Spot selector (filtered by settings) ── */}
+      {/* Spot selector — plain names, no indicators */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        style={{ marginBottom: 14 }}
+        style={{ marginBottom: 16 }}
         contentContainerStyle={{ gap: 8 }}
       >
         {visibleSpots.map((s, vi) => {
-          const q = windQuality(s.currentSpeed);
           const isActive = vi === clampedActive;
-          const low = minKnots > 0 && s.currentSpeed < minKnots;
           return (
             <TouchableOpacity
               key={s.name}
               onPress={() => {
                 setActiveSpot(vi);
                 setSelectedDay(null);
-                resetArrow(s, null);
+                setActiveIdx(0);
               }}
               activeOpacity={0.75}
               style={{
                 paddingHorizontal: 14, paddingVertical: 8,
                 borderRadius: 20, borderWidth: 1.5,
                 backgroundColor: isActive ? c.windLight : c.background,
-                borderColor: isActive ? c.wind : low ? c.danger + '88' : c.border,
-                flexDirection: 'row', alignItems: 'center', gap: 6,
+                borderColor: isActive ? c.wind : c.border,
               }}
             >
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: low ? c.danger : q.color }} />
-              <Text style={{ fontSize: 13, fontWeight: isActive ? '700' : '500', color: isActive ? c.wind : c.subtext }}>
+              <Text style={{
+                fontSize: 13,
+                fontWeight: isActive ? '700' : '500',
+                color: isActive ? c.wind : c.subtext,
+              }}>
                 {s.name}
               </Text>
-              {low && (
-                <View style={{ backgroundColor: c.danger, borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1 }}>
-                  <Text style={{ fontSize: 9, fontWeight: '700', color: '#fff' }}>↓{minKnots}</Text>
-                </View>
-              )}
             </TouchableOpacity>
           );
         })}
       </ScrollView>
 
-      {/* ── Arrow — below spot selector, linked to forecast scroll ── */}
-      <View style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 16,
-        marginBottom: 16,
-        paddingVertical: 8,
-        paddingHorizontal: 12,
-        borderRadius: 18,
-        backgroundColor: arrowQ.color + '14',
-        borderWidth: 1.5,
-        borderColor: arrowQ.color + '44',
-      }}>
-        <WindArrow
-          speedKnots={arrowSpeed}
-          directionDeg={arrowDir}
-          color={arrowQ.color}
-          size={ARROW_SIZE}
-        />
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 28, fontWeight: '900', color: arrowQ.color, lineHeight: 32 }}>
-            {arrowSpeed} <Text style={{ fontSize: 14, fontWeight: '600', color: c.subtext }}>kts</Text>
-          </Text>
-          <Text style={{ fontSize: 13, color: c.subtext, marginTop: 2 }}>
-            {degreesToDirection(arrowDir)} · {arrowDir}°
-          </Text>
-          <View style={{
-            alignSelf: 'flex-start', marginTop: 6,
-            paddingHorizontal: 10, paddingVertical: 3,
-            borderRadius: 10, backgroundColor: arrowQ.color,
-          }}>
-            <Text style={{ fontSize: 11, fontWeight: '700', color: '#fff' }}>{arrowQ.label}</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* ── Current conditions (static, always "now") ── */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4, gap: 8 }}>
-        <Text style={{ fontSize: 11, color: c.subtext, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 }}>
-          Now · {spot.currentSpeed} kts from {dirLabel}
+      {/* Current conditions */}
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end', marginBottom: 8 }}>
+        <Text style={{ fontSize: 56, fontWeight: '900', color: c.wind, lineHeight: 60 }}>
+          {spot.currentSpeed}
         </Text>
-        {belowMin && (
-          <View style={{ backgroundColor: c.danger, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2 }}>
-            <Text style={{ fontSize: 10, fontWeight: '700', color: '#fff' }}>Below {minKnots} kts minimum</Text>
-          </View>
-        )}
+        <Text style={{ fontSize: 16, fontWeight: '600', color: c.subtext, marginBottom: 8, marginLeft: 4 }}>
+          kts
+        </Text>
+        <Text style={{ fontSize: 13, color: c.subtext, marginBottom: 10, marginLeft: 10 }}>
+          From {dirLabel} · {spot.currentDirection}°
+        </Text>
       </View>
 
-      {/* Divider */}
-      <View style={{ height: 1, backgroundColor: c.border, marginBottom: 16 }} />
+      {/* Quality badge */}
+      <View style={{
+        alignSelf: 'flex-start',
+        paddingHorizontal: 14, paddingVertical: 5,
+        borderRadius: 20, backgroundColor: quality.color, marginBottom: 20,
+      }}>
+        <Text style={{ fontSize: 13, fontWeight: '700', color: '#fff' }}>{quality.label}</Text>
+      </View>
 
-      {/* ── Forecast scroll ── */}
+      {/* Forecast scroll */}
       {selectedDay === null ? (
         <ForecastScroll
           mode="daily"
           days={spot.daily}
           colors={c}
           activeIdx={activeIdx}
-          onSelectDay={idx => {
-            setSelectedDay(idx);
-            resetArrow(spot, idx);
-          }}
-          onActiveChange={(speed, dir) => {
-            setArrowSpeed(speed);
-            setArrowDir(dir);
-          }}
+          onSelectDay={idx => { setSelectedDay(idx); setActiveIdx(0); }}
+          onActiveChange={setActiveIdx}
         />
       ) : (
         <ForecastScroll
@@ -422,14 +348,8 @@ export default function WindWidget() {
           colors={c}
           activeIdx={activeIdx}
           dayLabel={selectedDayData ? fmtDay(selectedDayData.date) : ''}
-          onBack={() => {
-            setSelectedDay(null);
-            resetArrow(spot, null);
-          }}
-          onActiveChange={(speed, dir) => {
-            setArrowSpeed(speed);
-            setArrowDir(dir);
-          }}
+          onBack={() => { setSelectedDay(null); setActiveIdx(0); }}
+          onActiveChange={setActiveIdx}
         />
       )}
     </View>
