@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
   ActivityIndicator,
   TouchableOpacity,
   ScrollView,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import {
@@ -16,7 +18,19 @@ import {
 } from '../services/windService';
 import WindArrow from './WindArrow';
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const DAILY_CARD_W  = 70;
+const DAILY_GAP     = 8;
+const DAILY_STRIDE  = DAILY_CARD_W + DAILY_GAP;
+
+const HOURLY_CARD_W = 60;
+const HOURLY_GAP    = 8;
+const HOURLY_STRIDE = HOURLY_CARD_W + HOURLY_GAP;
+
+const ARROW_SIZE = 86;
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function windQuality(speed: number): { label: string; color: string } {
   if (speed < 10) return { label: 'Too Light', color: '#FFA502' };
@@ -26,7 +40,7 @@ function windQuality(speed: number): { label: string; color: string } {
   return             { label: 'Extreme',   color: '#FF4757' };
 }
 
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DAY_NAMES   = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 function fmtDay(date: Date): string {
@@ -36,116 +50,190 @@ function fmtHour(date: Date): string {
   return date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
-// ── Sub-components ───────────────────────────────────────────────────────────
+// ── LinkedForecast ────────────────────────────────────────────────────────────
+// Arrow on the left, scroll on the right — arrow tracks leftmost visible card.
 
-/** Daily 14-day scroll */
-function DailyForecast({
-  days,
-  colors,
-  onSelectDay,
-}: {
+interface LinkedForecastProps {
+  mode: 'daily';
   days: DayForecast[];
   colors: any;
   onSelectDay: (idx: number) => void;
-}) {
-  return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-      {days.map((d, i) => {
-        const q = windQuality(d.maxSpeed);
-        return (
-          <TouchableOpacity
-            key={i}
-            onPress={() => onSelectDay(i)}
-            activeOpacity={0.75}
-            style={{
-              width: 70,
-              borderRadius: 14,
-              paddingVertical: 10,
-              paddingHorizontal: 6,
-              alignItems: 'center',
-              borderWidth: 1.5,
-              backgroundColor: colors.background,
-              borderColor: colors.border,
-            }}
-          >
-            <Text style={{ fontSize: 10, fontWeight: '600', color: colors.subtext, marginBottom: 4 }}>
-              {fmtDay(d.date).split(' ')[0]}
-            </Text>
-            <Text style={{ fontSize: 10, color: colors.subtext, marginBottom: 6 }}>
-              {fmtDay(d.date).slice(4)}
-            </Text>
-            <View style={{
-              width: 36, height: 36, borderRadius: 18,
-              backgroundColor: q.color + '22',
-              alignItems: 'center', justifyContent: 'center',
-              marginBottom: 4,
-            }}>
-              <Text style={{ fontSize: 14, fontWeight: '900', color: q.color }}>{d.maxSpeed}</Text>
-            </View>
-            <Text style={{ fontSize: 9, fontWeight: '700', color: q.color }}>{q.label}</Text>
-          </TouchableOpacity>
-        );
-      })}
-    </ScrollView>
-  );
 }
 
-/** Hourly scroll for a selected day */
-function HourlyForecast({
-  hours,
-  colors,
-  onBack,
-  dayLabel,
-}: {
+interface LinkedHourlyProps {
+  mode: 'hourly';
   hours: HourForecast[];
   colors: any;
-  onBack: () => void;
   dayLabel: string;
-}) {
-  return (
-    <View>
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
-        <TouchableOpacity onPress={onBack} activeOpacity={0.7} style={{
-          flexDirection: 'row', alignItems: 'center', gap: 4,
+  onBack: () => void;
+}
+
+type LinkedProps = LinkedForecastProps | LinkedHourlyProps;
+
+function LinkedForecast(props: LinkedProps) {
+  const { colors } = props;
+  const [arrowIdx, setArrowIdx] = useState(0);
+
+  // Reset arrow to first card whenever the data set changes
+  const listKey = props.mode === 'daily'
+    ? props.days.length
+    : (props as LinkedHourlyProps).hours.length;
+
+  useEffect(() => { setArrowIdx(0); }, [listKey]);
+
+  const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const x      = e.nativeEvent.contentOffset.x;
+    const stride = props.mode === 'daily' ? DAILY_STRIDE : HOURLY_STRIDE;
+    const idx    = Math.min(
+      Math.round(x / stride),
+      props.mode === 'daily'
+        ? props.days.length - 1
+        : (props as LinkedHourlyProps).hours.length - 1,
+    );
+    if (idx >= 0) setArrowIdx(idx);
+  };
+
+  // Data for arrow
+  const arrowSpeed = props.mode === 'daily'
+    ? props.days[arrowIdx]?.maxSpeed ?? 0
+    : (props as LinkedHourlyProps).hours[arrowIdx]?.speed ?? 0;
+
+  const arrowDir = props.mode === 'daily'
+    ? props.days[arrowIdx]?.dominantDirection ?? 0
+    : (props as LinkedHourlyProps).hours[arrowIdx]?.direction ?? 0;
+
+  const arrowColor = windQuality(arrowSpeed).color;
+
+  // Header row (back button + label for hourly)
+  const header = props.mode === 'hourly' ? (
+    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+      <TouchableOpacity
+        onPress={(props as LinkedHourlyProps).onBack}
+        activeOpacity={0.7}
+        style={{
           paddingVertical: 4, paddingHorizontal: 10,
           backgroundColor: colors.resLight, borderRadius: 20,
-          borderWidth: 1, borderColor: colors.res,
-          marginRight: 10,
+          borderWidth: 1, borderColor: colors.res, marginRight: 10,
+        }}
+      >
+        <Text style={{ color: colors.res, fontSize: 13, fontWeight: '700' }}>← Daily</Text>
+      </TouchableOpacity>
+      <Text style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>
+        {(props as LinkedHourlyProps).dayLabel}
+      </Text>
+    </View>
+  ) : (
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+      <Text style={{ fontSize: 11, fontWeight: '700', letterSpacing: 1.5, color: colors.subtext, textTransform: 'uppercase' }}>
+        14-Day Forecast
+      </Text>
+      <Text style={{ fontSize: 10, color: colors.subtext }}>Tap day → hourly</Text>
+    </View>
+  );
+
+  return (
+    <View>
+      {header}
+
+      {/* Arrow + scroll row */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+
+        {/* Arrow — fixed, reflects leftmost card */}
+        <View style={{
+          width: ARROW_SIZE,
+          height: ARROW_SIZE,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: 16,
+          backgroundColor: arrowColor + '18',
+          borderWidth: 1.5,
+          borderColor: arrowColor + '55',
         }}>
-          <Text style={{ color: colors.res, fontSize: 13, fontWeight: '700' }}>← Daily</Text>
-        </TouchableOpacity>
-        <Text style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>{dayLabel}</Text>
+          <WindArrow
+            speedKnots={arrowSpeed}
+            directionDeg={arrowDir}
+            color={arrowColor}
+            size={ARROW_SIZE}
+          />
+        </View>
+
+        {/* Forecast scroll */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ flex: 1 }}
+          contentContainerStyle={{ gap: props.mode === 'daily' ? DAILY_GAP : HOURLY_GAP }}
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
+        >
+          {props.mode === 'daily'
+            ? props.days.map((d, i) => {
+                const q = windQuality(d.maxSpeed);
+                return (
+                  <TouchableOpacity
+                    key={i}
+                    onPress={() => (props as LinkedForecastProps).onSelectDay(i)}
+                    activeOpacity={0.75}
+                    style={{
+                      width: DAILY_CARD_W,
+                      borderRadius: 14,
+                      paddingVertical: 10,
+                      paddingHorizontal: 4,
+                      alignItems: 'center',
+                      borderWidth: 1.5,
+                      backgroundColor: colors.background,
+                      borderColor: i === arrowIdx ? q.color : colors.border,
+                    }}
+                  >
+                    <Text style={{ fontSize: 10, fontWeight: '700', color: colors.subtext }}>
+                      {DAY_NAMES[d.date.getDay()]}
+                    </Text>
+                    <Text style={{ fontSize: 9, color: colors.subtext, marginBottom: 6 }}>
+                      {d.date.getDate()} {MONTH_SHORT[d.date.getMonth()]}
+                    </Text>
+                    <View style={{
+                      width: 34, height: 34, borderRadius: 17,
+                      backgroundColor: q.color + '22',
+                      alignItems: 'center', justifyContent: 'center',
+                      marginBottom: 4,
+                    }}>
+                      <Text style={{ fontSize: 13, fontWeight: '900', color: q.color }}>{d.maxSpeed}</Text>
+                    </View>
+                    <Text style={{ fontSize: 8, fontWeight: '700', color: q.color }}>{q.label}</Text>
+                  </TouchableOpacity>
+                );
+              })
+            : (props as LinkedHourlyProps).hours.map((h, i) => {
+                const q = windQuality(h.speed);
+                return (
+                  <View
+                    key={i}
+                    style={{
+                      width: HOURLY_CARD_W,
+                      borderRadius: 14,
+                      paddingVertical: 10,
+                      alignItems: 'center',
+                      borderWidth: 1.5,
+                      backgroundColor: colors.background,
+                      borderColor: i === arrowIdx ? q.color : colors.border,
+                    }}
+                  >
+                    <Text style={{ fontSize: 10, fontWeight: '600', color: colors.subtext, marginBottom: 4 }}>
+                      {fmtHour(h.time)}
+                    </Text>
+                    <Text style={{ fontSize: 15, fontWeight: '800', color: q.color }}>{h.speed}</Text>
+                    <Text style={{ fontSize: 9, color: colors.subtext, marginTop: 2 }}>kts</Text>
+                  </View>
+                );
+              })
+          }
+        </ScrollView>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-        {hours.map((h, i) => {
-          const q = windQuality(h.speed);
-          return (
-            <View
-              key={i}
-              style={{
-                width: 60,
-                borderRadius: 14,
-                paddingVertical: 10,
-                alignItems: 'center',
-                borderWidth: 1.5,
-                backgroundColor: colors.background,
-                borderColor: colors.border,
-              }}
-            >
-              <Text style={{ fontSize: 10, fontWeight: '600', color: colors.subtext, marginBottom: 4 }}>
-                {fmtHour(h.time)}
-              </Text>
-              <Text style={{ fontSize: 16, fontWeight: '800', color: q.color }}>{h.speed}</Text>
-              <Text style={{ fontSize: 9, color: colors.subtext, marginTop: 2 }}>kts</Text>
-            </View>
-          );
-        })}
-      </ScrollView>
     </View>
   );
 }
 
-// ── Main Widget ──────────────────────────────────────────────────────────────
+// ── Main Widget ───────────────────────────────────────────────────────────────
 
 export default function WindWidget() {
   const { colors: c } = useTheme();
@@ -153,7 +241,6 @@ export default function WindWidget() {
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState<string | null>(null);
   const [activeSpot, setActiveSpot] = useState(0);
-  // null = daily view; number = index into spot.daily → show hourly for that day
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
 
   useEffect(() => {
@@ -201,7 +288,6 @@ export default function WindWidget() {
   const quality = windQuality(spot.currentSpeed);
   const dirLabel = degreesToDirection(spot.currentDirection);
 
-  // Hourly entries for the selected day
   const selectedDayData = selectedDay !== null ? spot.daily[selectedDay] : null;
   const dayHours: HourForecast[] = selectedDay !== null
     ? spot.hourly.filter(h => {
@@ -237,15 +323,11 @@ export default function WindWidget() {
               onPress={() => { setActiveSpot(i); setSelectedDay(null); }}
               activeOpacity={0.75}
               style={{
-                paddingHorizontal: 14,
-                paddingVertical: 8,
-                borderRadius: 20,
-                borderWidth: 1.5,
+                paddingHorizontal: 14, paddingVertical: 8,
+                borderRadius: 20, borderWidth: 1.5,
                 backgroundColor: isActive ? c.windLight : c.background,
                 borderColor: isActive ? c.wind : c.border,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 6,
+                flexDirection: 'row', alignItems: 'center', gap: 6,
               }}
             >
               <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: q.color }} />
@@ -257,66 +339,43 @@ export default function WindWidget() {
         })}
       </ScrollView>
 
-      {/* ── Current conditions row ─────────────────────────────── */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-        {/* Speed + unit */}
-        <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
-            <Text style={{ fontSize: 56, fontWeight: '900', color: c.wind, lineHeight: 60 }}>
-              {spot.currentSpeed}
-            </Text>
-            <Text style={{ fontSize: 16, fontWeight: '600', color: c.subtext, marginBottom: 8, marginLeft: 4 }}>
-              kts
-            </Text>
-          </View>
-          {/* Direction text below speed */}
-          <Text style={{ fontSize: 13, color: c.subtext, marginTop: 2 }}>
-            From {dirLabel} · {spot.currentDirection}°
-          </Text>
-        </View>
-
-        {/* Wind direction arrow with knots label */}
-        <WindArrow
-          speedKnots={spot.currentSpeed}
-          directionDeg={spot.currentDirection}
-          color={quality.color}
-          size={110}
-        />
+      {/* Current conditions */}
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end', marginBottom: 8 }}>
+        <Text style={{ fontSize: 56, fontWeight: '900', color: c.wind, lineHeight: 60 }}>
+          {spot.currentSpeed}
+        </Text>
+        <Text style={{ fontSize: 16, fontWeight: '600', color: c.subtext, marginBottom: 8, marginLeft: 4 }}>
+          kts
+        </Text>
+        <Text style={{ fontSize: 13, color: c.subtext, marginBottom: 10, marginLeft: 10 }}>
+          From {dirLabel} · {spot.currentDirection}°
+        </Text>
       </View>
 
       {/* Quality badge */}
       <View style={{
         alignSelf: 'flex-start',
-        paddingHorizontal: 14,
-        paddingVertical: 5,
-        borderRadius: 20,
-        backgroundColor: quality.color,
-        marginBottom: 20,
+        paddingHorizontal: 14, paddingVertical: 5,
+        borderRadius: 20, backgroundColor: quality.color, marginBottom: 20,
       }}>
         <Text style={{ fontSize: 13, fontWeight: '700', color: '#fff' }}>{quality.label}</Text>
       </View>
 
-      {/* ── Forecast section ───────────────────────────────────── */}
+      {/* Forecast: arrow linked to scroll */}
       {selectedDay === null ? (
-        <>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <Text style={{ fontSize: 11, fontWeight: '700', letterSpacing: 1.5, color: c.subtext, textTransform: 'uppercase' }}>
-              14-Day Forecast
-            </Text>
-            <Text style={{ fontSize: 10, color: c.subtext }}>Tap a day for hourly →</Text>
-          </View>
-          <DailyForecast
-            days={spot.daily}
-            colors={c}
-            onSelectDay={idx => setSelectedDay(idx)}
-          />
-        </>
+        <LinkedForecast
+          mode="daily"
+          days={spot.daily}
+          colors={c}
+          onSelectDay={idx => setSelectedDay(idx)}
+        />
       ) : (
-        <HourlyForecast
+        <LinkedForecast
+          mode="hourly"
           hours={dayHours}
           colors={c}
-          onBack={() => setSelectedDay(null)}
           dayLabel={selectedDayData ? fmtDay(selectedDayData.date) : ''}
+          onBack={() => setSelectedDay(null)}
         />
       )}
     </View>

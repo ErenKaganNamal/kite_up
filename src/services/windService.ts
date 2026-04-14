@@ -2,22 +2,24 @@ import { fetchWeatherApi } from 'openmeteo';
 
 export interface DayForecast {
   date: Date;
-  maxSpeed: number; // knots
+  maxSpeed: number;         // knots
+  dominantDirection: number; // degrees
 }
 
 export interface HourForecast {
   time: Date;
-  speed: number; // knots
+  speed: number;     // knots
+  direction: number; // degrees
 }
 
 export interface SpotWind {
   name: string;
   lat: number;
   lon: number;
-  currentSpeed: number;    // knots
+  currentSpeed: number;     // knots
   currentDirection: number; // degrees (meteorological: where wind comes FROM)
-  daily: DayForecast[];    // 14 days, max wind per day
-  hourly: HourForecast[];  // all hourly entries for the 14-day window
+  daily: DayForecast[];     // 14 days, max wind + dominant direction per day
+  hourly: HourForecast[];   // all hourly entries for the 14-day window
 }
 
 const SPOTS = [
@@ -45,7 +47,7 @@ export async function fetchAllSpotsWind(): Promise<SpotWind[]> {
     latitude:  SPOTS.map(s => s.lat),
     longitude: SPOTS.map(s => s.lon),
     hourly:    ['wind_speed_10m', 'wind_direction_10m'],
-    daily:     ['wind_speed_10m_max'],
+    daily:     ['wind_speed_10m_max', 'wind_direction_10m_dominant'],
     timezone:  'Europe/Istanbul',
     wind_speed_unit: 'kn',
     forecast_days: 14,
@@ -68,14 +70,14 @@ export async function fetchAllSpotsWind(): Promise<SpotWind[]> {
     const speeds     = Array.from(hourly.variables(0)!.valuesArray()!);
     const directions = Array.from(hourly.variables(1)!.valuesArray()!);
 
-    // Current hour index
     const now = Date.now();
     const nowIdx = hourlyTimes.reduce((best, t, j) =>
       Math.abs(t.getTime() - now) < Math.abs(hourlyTimes[best].getTime() - now) ? j : best, 0);
 
     const hourlyForecast: HourForecast[] = hourlyTimes.map((t, j) => ({
-      time:  t,
-      speed: Math.round(speeds[j]),
+      time:      t,
+      speed:     Math.round(speeds[j]),
+      direction: Math.round(directions[j]),
     }));
 
     // ── Daily ────────────────────────────────────────────────────
@@ -84,11 +86,13 @@ export async function fetchAllSpotsWind(): Promise<SpotWind[]> {
       { length: (Number(daily.timeEnd()) - Number(daily.time())) / daily.interval() },
       (_, j) => new Date((Number(daily.time()) + j * daily.interval() + utcOffset) * 1000),
     );
-    const dailyMaxSpeeds = Array.from(daily.variables(0)!.valuesArray()!);
+    const dailyMaxSpeeds  = Array.from(daily.variables(0)!.valuesArray()!);
+    const dailyDirsDom    = Array.from(daily.variables(1)!.valuesArray()!);
 
     const dailyForecast: DayForecast[] = dailyTimes.map((t, j) => ({
-      date:     t,
-      maxSpeed: Math.round(dailyMaxSpeeds[j]),
+      date:              t,
+      maxSpeed:          Math.round(dailyMaxSpeeds[j]),
+      dominantDirection: Math.round(dailyDirsDom[j]),
     }));
 
     return {
