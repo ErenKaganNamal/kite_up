@@ -14,7 +14,7 @@ import {
   DayForecast,
   HourForecast,
 } from '../services/windService';
-import WindSock from './WindSock';
+import WindArrow from './WindArrow';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -275,10 +275,11 @@ export default function WindWidget() {
           </Text>
         </View>
 
-        {/* Windsock */}
-        <WindSock
+        {/* Wind direction arrow with knots label */}
+        <WindArrow
           speedKnots={spot.currentSpeed}
           directionDeg={spot.currentDirection}
+          color={quality.color}
           size={110}
         />
       </View>
