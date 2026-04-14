@@ -1,12 +1,23 @@
 import { fetchWeatherApi } from 'openmeteo';
 
+export interface DayForecast {
+  date: Date;
+  maxSpeed: number; // knots
+}
+
+export interface HourForecast {
+  time: Date;
+  speed: number; // knots
+}
+
 export interface SpotWind {
   name: string;
   lat: number;
   lon: number;
-  currentSpeed: number;   // knots
-  currentDirection: number; // degrees
-  forecast: { time: Date; speed: number }[];
+  currentSpeed: number;    // knots
+  currentDirection: number; // degrees (meteorological: where wind comes FROM)
+  daily: DayForecast[];    // 14 days, max wind per day
+  hourly: HourForecast[];  // all hourly entries for the 14-day window
 }
 
 const SPOTS = [
@@ -22,21 +33,22 @@ const SPOTS = [
   { name: 'Antalya',    lat: 36.7686, lon: 35.7894 },
 ];
 
-function degreesToDirection(deg: number): string {
+export function degreesToDirection(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
   return dirs[Math.round(deg / 45) % 8];
 }
 
-export { degreesToDirection, SPOTS };
+export { SPOTS };
 
 export async function fetchAllSpotsWind(): Promise<SpotWind[]> {
   const params = {
     latitude:  SPOTS.map(s => s.lat),
     longitude: SPOTS.map(s => s.lon),
-    hourly: ['wind_speed_10m', 'wind_direction_10m'],
-    timezone: 'Europe/Istanbul',
+    hourly:    ['wind_speed_10m', 'wind_direction_10m'],
+    daily:     ['wind_speed_10m_max'],
+    timezone:  'Europe/Istanbul',
     wind_speed_unit: 'kn',
-    forecast_days: 1,
+    forecast_days: 14,
   };
 
   const responses = await fetchWeatherApi(
@@ -46,29 +58,47 @@ export async function fetchAllSpotsWind(): Promise<SpotWind[]> {
 
   return responses.map((response, i) => {
     const utcOffset = response.utcOffsetSeconds();
+
+    // ── Hourly ──────────────────────────────────────────────────
     const hourly = response.hourly()!;
-    const times = Array.from(
+    const hourlyTimes = Array.from(
       { length: (Number(hourly.timeEnd()) - Number(hourly.time())) / hourly.interval() },
       (_, j) => new Date((Number(hourly.time()) + j * hourly.interval() + utcOffset) * 1000),
     );
     const speeds     = Array.from(hourly.variables(0)!.valuesArray()!);
     const directions = Array.from(hourly.variables(1)!.valuesArray()!);
 
-    // Find the index closest to now
+    // Current hour index
     const now = Date.now();
-    const nowIdx = times.reduce((best, t, j) =>
-      Math.abs(t.getTime() - now) < Math.abs(times[best].getTime() - now) ? j : best, 0);
+    const nowIdx = hourlyTimes.reduce((best, t, j) =>
+      Math.abs(t.getTime() - now) < Math.abs(hourlyTimes[best].getTime() - now) ? j : best, 0);
+
+    const hourlyForecast: HourForecast[] = hourlyTimes.map((t, j) => ({
+      time:  t,
+      speed: Math.round(speeds[j]),
+    }));
+
+    // ── Daily ────────────────────────────────────────────────────
+    const daily = response.daily()!;
+    const dailyTimes = Array.from(
+      { length: (Number(daily.timeEnd()) - Number(daily.time())) / daily.interval() },
+      (_, j) => new Date((Number(daily.time()) + j * daily.interval() + utcOffset) * 1000),
+    );
+    const dailyMaxSpeeds = Array.from(daily.variables(0)!.valuesArray()!);
+
+    const dailyForecast: DayForecast[] = dailyTimes.map((t, j) => ({
+      date:     t,
+      maxSpeed: Math.round(dailyMaxSpeeds[j]),
+    }));
 
     return {
-      name: SPOTS[i].name,
-      lat:  SPOTS[i].lat,
-      lon:  SPOTS[i].lon,
+      name:             SPOTS[i].name,
+      lat:              SPOTS[i].lat,
+      lon:              SPOTS[i].lon,
       currentSpeed:     Math.round(speeds[nowIdx]),
       currentDirection: Math.round(directions[nowIdx]),
-      forecast: times.slice(nowIdx, nowIdx + 6).map((t, j) => ({
-        time:  t,
-        speed: Math.round(speeds[nowIdx + j]),
-      })),
+      daily:            dailyForecast,
+      hourly:           hourlyForecast,
     };
   });
 }

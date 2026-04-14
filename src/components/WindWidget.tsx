@@ -7,7 +7,16 @@ import {
   ScrollView,
 } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
-import { fetchAllSpotsWind, degreesToDirection, SpotWind } from '../services/windService';
+import {
+  fetchAllSpotsWind,
+  degreesToDirection,
+  SpotWind,
+  DayForecast,
+  HourForecast,
+} from '../services/windService';
+import WindSock from './WindSock';
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 function windQuality(speed: number): { label: string; color: string } {
   if (speed < 10) return { label: 'Too Light', color: '#FFA502' };
@@ -17,22 +26,144 @@ function windQuality(speed: number): { label: string; color: string } {
   return             { label: 'Extreme',   color: '#FF4757' };
 }
 
-function formatHour(date: Date): string {
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function fmtDay(date: Date): string {
+  return `${DAY_NAMES[date.getDay()]} ${date.getDate()} ${MONTH_SHORT[date.getMonth()]}`;
+}
+function fmtHour(date: Date): string {
   return date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
+// ── Sub-components ───────────────────────────────────────────────────────────
+
+/** Daily 14-day scroll */
+function DailyForecast({
+  days,
+  colors,
+  onSelectDay,
+}: {
+  days: DayForecast[];
+  colors: any;
+  onSelectDay: (idx: number) => void;
+}) {
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+      {days.map((d, i) => {
+        const q = windQuality(d.maxSpeed);
+        return (
+          <TouchableOpacity
+            key={i}
+            onPress={() => onSelectDay(i)}
+            activeOpacity={0.75}
+            style={{
+              width: 70,
+              borderRadius: 14,
+              paddingVertical: 10,
+              paddingHorizontal: 6,
+              alignItems: 'center',
+              borderWidth: 1.5,
+              backgroundColor: colors.background,
+              borderColor: colors.border,
+            }}
+          >
+            <Text style={{ fontSize: 10, fontWeight: '600', color: colors.subtext, marginBottom: 4 }}>
+              {fmtDay(d.date).split(' ')[0]}
+            </Text>
+            <Text style={{ fontSize: 10, color: colors.subtext, marginBottom: 6 }}>
+              {fmtDay(d.date).slice(4)}
+            </Text>
+            <View style={{
+              width: 36, height: 36, borderRadius: 18,
+              backgroundColor: q.color + '22',
+              alignItems: 'center', justifyContent: 'center',
+              marginBottom: 4,
+            }}>
+              <Text style={{ fontSize: 14, fontWeight: '900', color: q.color }}>{d.maxSpeed}</Text>
+            </View>
+            <Text style={{ fontSize: 9, fontWeight: '700', color: q.color }}>{q.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+/** Hourly scroll for a selected day */
+function HourlyForecast({
+  hours,
+  colors,
+  onBack,
+  dayLabel,
+}: {
+  hours: HourForecast[];
+  colors: any;
+  onBack: () => void;
+  dayLabel: string;
+}) {
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+        <TouchableOpacity onPress={onBack} activeOpacity={0.7} style={{
+          flexDirection: 'row', alignItems: 'center', gap: 4,
+          paddingVertical: 4, paddingHorizontal: 10,
+          backgroundColor: colors.resLight, borderRadius: 20,
+          borderWidth: 1, borderColor: colors.res,
+          marginRight: 10,
+        }}>
+          <Text style={{ color: colors.res, fontSize: 13, fontWeight: '700' }}>← Daily</Text>
+        </TouchableOpacity>
+        <Text style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>{dayLabel}</Text>
+      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+        {hours.map((h, i) => {
+          const q = windQuality(h.speed);
+          return (
+            <View
+              key={i}
+              style={{
+                width: 60,
+                borderRadius: 14,
+                paddingVertical: 10,
+                alignItems: 'center',
+                borderWidth: 1.5,
+                backgroundColor: colors.background,
+                borderColor: colors.border,
+              }}
+            >
+              <Text style={{ fontSize: 10, fontWeight: '600', color: colors.subtext, marginBottom: 4 }}>
+                {fmtHour(h.time)}
+              </Text>
+              <Text style={{ fontSize: 16, fontWeight: '800', color: q.color }}>{h.speed}</Text>
+              <Text style={{ fontSize: 9, color: colors.subtext, marginTop: 2 }}>kts</Text>
+            </View>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+// ── Main Widget ──────────────────────────────────────────────────────────────
+
 export default function WindWidget() {
   const { colors: c } = useTheme();
-  const [spots, setSpots] = useState<SpotWind[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [spots, setSpots]           = useState<SpotWind[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState<string | null>(null);
   const [activeSpot, setActiveSpot] = useState(0);
-  const [activeHour, setActiveHour] = useState(0);
+  // null = daily view; number = index into spot.daily → show hourly for that day
+  const [selectedDay, setSelectedDay] = useState<number | null>(null);
 
   useEffect(() => {
     fetchAllSpotsWind()
       .then(data => { setSpots(data); setLoading(false); })
-      .catch(e => { setError('Could not load wind data'); setLoading(false); console.error(e); });
+      .catch(e => {
+        console.error(e);
+        setError('Could not load wind data');
+        setLoading(false);
+      });
   }, []);
 
   const cardStyle = {
@@ -51,7 +182,7 @@ export default function WindWidget() {
 
   if (loading) {
     return (
-      <View style={[cardStyle, { alignItems: 'center' as const, justifyContent: 'center' as const, minHeight: 180 }]}>
+      <View style={[cardStyle, { alignItems: 'center' as const, justifyContent: 'center' as const, minHeight: 200 }]}>
         <ActivityIndicator size="large" color={c.wind} />
         <Text style={{ color: c.subtext, marginTop: 8, fontSize: 13 }}>Fetching wind data...</Text>
       </View>
@@ -66,19 +197,31 @@ export default function WindWidget() {
     );
   }
 
-  const spot = spots[activeSpot];
-  const hourData = spot.forecast[activeHour] ?? spot.forecast[0];
-  const quality = windQuality(hourData.speed);
-  const direction = degreesToDirection(spot.currentDirection);
+  const spot    = spots[activeSpot];
+  const quality = windQuality(spot.currentSpeed);
+  const dirLabel = degreesToDirection(spot.currentDirection);
+
+  // Hourly entries for the selected day
+  const selectedDayData = selectedDay !== null ? spot.daily[selectedDay] : null;
+  const dayHours: HourForecast[] = selectedDay !== null
+    ? spot.hourly.filter(h => {
+        const d = spot.daily[selectedDay].date;
+        return (
+          h.time.getFullYear() === d.getFullYear() &&
+          h.time.getMonth()    === d.getMonth() &&
+          h.time.getDate()     === d.getDate()
+        );
+      })
+    : [];
 
   return (
     <View style={cardStyle}>
-      {/* Widget label */}
+      {/* Label */}
       <Text style={{ fontSize: 11, fontWeight: '700', letterSpacing: 2, color: c.wind, textTransform: 'uppercase', marginBottom: 12 }}>
         Wind
       </Text>
 
-      {/* Spot selector — horizontal scroll */}
+      {/* Spot selector */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -91,7 +234,7 @@ export default function WindWidget() {
           return (
             <TouchableOpacity
               key={s.name}
-              onPress={() => { setActiveSpot(i); setActiveHour(0); }}
+              onPress={() => { setActiveSpot(i); setSelectedDay(null); }}
               activeOpacity={0.75}
               style={{
                 paddingHorizontal: 14,
@@ -114,20 +257,30 @@ export default function WindWidget() {
         })}
       </ScrollView>
 
-      {/* Main wind display */}
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end', marginBottom: 12 }}>
-        <Text style={{ fontSize: 56, fontWeight: '900', color: c.wind, lineHeight: 60 }}>
-          {hourData.speed}
-        </Text>
-        <Text style={{ fontSize: 16, fontWeight: '600', color: c.subtext, marginBottom: 8, marginLeft: 4 }}>
-          kts
-        </Text>
-        <View style={{ marginLeft: 'auto', alignItems: 'flex-end' }}>
-          <Text style={{ fontSize: 22, fontWeight: '800', color: c.text }}>{direction}</Text>
+      {/* ── Current conditions row ─────────────────────────────── */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+        {/* Speed + unit */}
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
+            <Text style={{ fontSize: 56, fontWeight: '900', color: c.wind, lineHeight: 60 }}>
+              {spot.currentSpeed}
+            </Text>
+            <Text style={{ fontSize: 16, fontWeight: '600', color: c.subtext, marginBottom: 8, marginLeft: 4 }}>
+              kts
+            </Text>
+          </View>
+          {/* Direction text below speed */}
           <Text style={{ fontSize: 13, color: c.subtext, marginTop: 2 }}>
-            {spot.currentDirection}°
+            From {dirLabel} · {spot.currentDirection}°
           </Text>
         </View>
+
+        {/* Windsock */}
+        <WindSock
+          speedKnots={spot.currentSpeed}
+          directionDeg={spot.currentDirection}
+          size={110}
+        />
       </View>
 
       {/* Quality badge */}
@@ -137,43 +290,34 @@ export default function WindWidget() {
         paddingVertical: 5,
         borderRadius: 20,
         backgroundColor: quality.color,
-        marginBottom: 16,
+        marginBottom: 20,
       }}>
         <Text style={{ fontSize: 13, fontWeight: '700', color: '#fff' }}>{quality.label}</Text>
       </View>
 
-      {/* Hourly forecast */}
-      <Text style={{ fontSize: 11, fontWeight: '700', letterSpacing: 1.5, color: c.subtext, textTransform: 'uppercase', marginBottom: 10 }}>
-        Hourly Forecast
-      </Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-        {spot.forecast.map((f, i) => {
-          const q = windQuality(f.speed);
-          const isSel = i === activeHour;
-          return (
-            <TouchableOpacity
-              key={i}
-              onPress={() => setActiveHour(i)}
-              activeOpacity={0.75}
-              style={{
-                width: 62,
-                borderRadius: 14,
-                paddingVertical: 10,
-                alignItems: 'center',
-                borderWidth: 1.5,
-                backgroundColor: isSel ? c.windLight : c.background,
-                borderColor: isSel ? c.wind : c.border,
-              }}
-            >
-              <Text style={{ fontSize: 10, fontWeight: '600', marginBottom: 4, color: isSel ? c.wind : c.subtext }}>
-                {formatHour(f.time)}
-              </Text>
-              <Text style={{ fontSize: 16, fontWeight: '800', color: q.color }}>{f.speed}</Text>
-              <Text style={{ fontSize: 10, color: c.subtext, marginTop: 2 }}>kts</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+      {/* ── Forecast section ───────────────────────────────────── */}
+      {selectedDay === null ? (
+        <>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <Text style={{ fontSize: 11, fontWeight: '700', letterSpacing: 1.5, color: c.subtext, textTransform: 'uppercase' }}>
+              14-Day Forecast
+            </Text>
+            <Text style={{ fontSize: 10, color: c.subtext }}>Tap a day for hourly →</Text>
+          </View>
+          <DailyForecast
+            days={spot.daily}
+            colors={c}
+            onSelectDay={idx => setSelectedDay(idx)}
+          />
+        </>
+      ) : (
+        <HourlyForecast
+          hours={dayHours}
+          colors={c}
+          onBack={() => setSelectedDay(null)}
+          dayLabel={selectedDayData ? fmtDay(selectedDayData.date) : ''}
+        />
+      )}
     </View>
   );
 }
